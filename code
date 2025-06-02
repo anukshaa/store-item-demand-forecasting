@@ -1,0 +1,110 @@
+# Step 1: Import Libraries
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_squared_error
+from xgboost import XGBRegressor
+import warnings
+warnings.filterwarnings('ignore')
+
+# Step 2: Load Data
+train = pd.read_csv('/kaggle/input/demand-forecasting-kernels-only/train.csv', parse_dates=['date'])
+test = pd.read_csv('/kaggle/input/demand-forecasting-kernels-only/test.csv', parse_dates=['date'])
+submission = pd.read_csv('/kaggle/input/demand-forecasting-kernels-only/sample_submission.csv')
+
+
+# Step 3: Add placeholder 'sales' column to test for merging
+test['sales'] = np.nan
+
+# Step 4: Combine train and test for consistent feature engineering
+full_data = pd.concat([train, test], sort=False).sort_values(['store', 'item', 'date'])
+
+# Step 5: Feature Engineering
+full_data['month'] = full_data['date'].dt.month
+full_data['day'] = full_data['date'].dt.day
+full_data['weekday'] = full_data['date'].dt.weekday
+full_data['week'] = full_data['date'].dt.isocalendar().week
+
+# Step 6: Lag and Rolling Features
+full_data['lag_7'] = full_data.groupby(['store', 'item'])['sales'].shift(7)
+full_data['rolling_mean_7'] = full_data.groupby(['store', 'item'])['sales'].transform(lambda x: x.shift(1).rolling(7).mean())
+
+# Step 7: Split back into train and test
+train_fe = full_data[full_data['sales'].notnull()]
+test_fe = full_data[full_data['sales'].isnull()]
+
+# Step 8: Prepare Features
+features = ['store', 'item', 'month', 'day', 'weekday', 'week', 'lag_7', 'rolling_mean_7']
+X = train_fe[features].fillna(0)
+y = train_fe['sales']
+
+# Step 9: Train-Validation Split
+X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
+
+# Step 10: Train Model
+model = XGBRegressor(n_estimators=100, learning_rate=0.1, max_depth=6, random_state=42)
+model.fit(X_train, y_train)
+
+# Step 11: Predict and Evaluate
+y_pred = model.predict(X_val)
+rmse = np.sqrt(mean_squared_error(y_val, y_pred))  # works in latest sklearn
+print(f'Validation RMSE: {rmse:.2f}')
+
+# Step 12: Predict on Test
+X_test = test_fe[features].fillna(0)
+test_fe['sales'] = model.predict(X_test)
+
+# Step 13: Create Submission File
+submission['sales'] = test_fe['sales'].values
+submission.to_csv('submission.csv', index=False)
+print("✅ Submission file saved as 'submission.csv'")
+
+# Step 14: Plot some predictions
+plt.figure(figsize=(10, 4))
+plt.plot(y_val.values[:100], label='Actual')
+plt.plot(y_pred[:100], label='Predicted')
+plt.title('Sample Predictions vs Actual')
+plt.legend()
+plt.show()
+
+# Step 12: Prepare Test Set (same features as training)
+test = test.sort_values(['store', 'item', 'date'])
+
+# Add lag and rolling mean features using past training data
+# Concatenate last few days of train to get lag values
+last_days = train[train['date'] >= (train['date'].max() - pd.Timedelta(days=30))]
+combined = pd.concat([last_days, test], ignore_index=True)
+
+# Generate lag and rolling mean features on combined set
+combined = combined.sort_values(['store', 'item', 'date'])
+combined['lag_7'] = combined.groupby(['store', 'item'])['sales'].shift(7)
+combined['rolling_mean_7'] = combined.groupby(['store', 'item'])['sales'].transform(lambda x: x.shift(1).rolling(window=7).mean())
+
+# Filter only the test rows
+test_features = combined[combined['date'] >= test['date'].min()].copy()
+# Recreate datetime features for the combined test data
+test_features['month'] = test_features['date'].dt.month
+test_features['day'] = test_features['date'].dt.day
+test_features['weekday'] = test_features['date'].dt.weekday
+test_features['week'] = test_features['date'].dt.isocalendar().week.astype(int)
+
+# Define the same features as in training
+features = ['store', 'item', 'month', 'day', 'weekday', 'week', 'lag_7', 'rolling_mean_7']
+X_test = test_features[features]
+
+# Step 13: Make Predictions
+test_features['sales'] = model.predict(X_test)
+
+# Step 14: Save Submission File
+submission = test_features[['id', 'sales']]
+submission.to_csv('submission.csv', index=False)
+print("✅ Submission file 'submission.csv' created!")
+
+# Make predictions
+test_features['sales'] = model.predict(X_test)
+
+# Create submission file
+submission = test_features[['id', 'sales']]
+submission.to_csv('submission.csv', index=False)
+print("✅ Submission file created successfully as 'submission.csv'")
